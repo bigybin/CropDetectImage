@@ -11,7 +11,7 @@ from PyQt6.QtGui import QDragEnterEvent, QDropEvent, QCursor
 from PIL import Image, ImageDraw, ImageFont
 
 
-# 定义获取工作区所需的 Windows 结构体
+# Windows 结构体定义
 class RECT(ctypes.Structure):
     _fields_ = [("left", ctypes.c_long), ("top", ctypes.c_long),
                 ("right", ctypes.c_long), ("bottom", ctypes.c_long)]
@@ -53,6 +53,7 @@ class ImageCropper(QWidget):
 
         btn_layout = QHBoxLayout()
         self.btn = QPushButton("选择图片")
+        self.btn.setCursor(QCursor(Qt.CursorShape.PointingHandCursor))
         self.btn.clicked.connect(self.openFileDialog)
         btn_layout.addStretch()
         btn_layout.addWidget(self.btn)
@@ -75,22 +76,29 @@ class ImageCropper(QWidget):
         fname, _ = QFileDialog.getOpenFileName(self, '选择图片', '', '图片文件 (*.jpg *.png *.jpeg)')
         if fname: self.process_image(fname)
 
-    def draw_chinese_text(self, img, text, position, font_size=55, color=(255, 255, 255)):
+    def draw_chinese_text(self, img, text, position, font_size, color=(255, 255, 255)):
         img_pil = Image.fromarray(cv2.cvtColor(img, cv2.COLOR_BGR2RGB))
         draw = ImageDraw.Draw(img_pil)
         try:
-            font = ImageFont.truetype("msyh.ttc", font_size)
+            font = ImageFont.truetype("msyh.ttc", int(font_size))
         except:
             font = ImageFont.load_default()
 
         bbox = draw.textbbox((0, 0), text, font=font)
         text_w, text_h = bbox[2] - bbox[0], bbox[3] - bbox[1]
-        draw.text((position[0] - text_w / 2, position[1] - text_h / 2 - 10), text, font=font, fill=color)
+        draw.text((position[0] - text_w / 2, position[1] - text_h / 2 - (text_h * 0.1)), text, font=font, fill=color)
         return cv2.cvtColor(np.array(img_pil), cv2.COLOR_RGB2BGR)
 
     def process_image(self, img_path):
-        img = cv2.imread(img_path)
-        if img is None: return
+        try:
+            img = cv2.imdecode(np.fromfile(img_path, dtype=np.uint8), cv2.IMREAD_COLOR)
+        except:
+            img = None
+
+        if img is None:
+            QMessageBox.critical(self, "错误", f"无法读取该图片。\n路径: {img_path}")
+            return
+
         h, w = img.shape[:2]
         gray = cv2.cvtColor(img, cv2.COLOR_BGR2GRAY)
         edged = cv2.Canny(cv2.GaussianBlur(gray, (5, 5), 0), 30, 150)
@@ -110,8 +118,11 @@ class ImageCropper(QWidget):
             file_stem = os.path.splitext(os.path.basename(img_path))[0]
             for i, idx in enumerate(selected_indices):
                 bx, by, bw, bh = boxes[idx]
-                cv2.imwrite(os.path.join(base_dir, f"{file_stem}_{i + 1}.png"), img[by:by + bh, bx:bx + bw])
-            QMessageBox.information(self, "完成", f"已提取 {len(selected_indices)} 张图片")
+                crop = img[by:by + bh, bx:bx + bw]
+                save_path = os.path.join(base_dir, f"{file_stem}_{i + 1}.png")
+                res, img_encode = cv2.imencode('.png', crop)
+                if res: img_encode.tofile(save_path)
+            QMessageBox.information(self, "完成", f"已成功提取 {len(selected_indices)} 张图片")
 
     def opencv_select_window(self, img, boxes):
         selected = []
@@ -119,32 +130,31 @@ class ImageCropper(QWidget):
         win_name = "BigYb_Select_Window"
 
         img_h, img_w = img.shape[:2]
-        btn_radius = 120
-        # 1. 修复按钮间距：增加到 120px 的 Margin，确保绝对不会被状态栏挡住
-        btn_center = [img_w - btn_radius - 120, img_h - btn_radius - 120]
+
+        # --- 修复 2: 按钮半径和边距改为百分比大小 ---
+        base_size = min(img_h, img_w)
+        btn_radius = int(base_size * 0.08)  # 半径为短边的 8%
+        margin = int(base_size * 0.05)  # 边距为短边的 5%
+        btn_center = [img_w - btn_radius - margin, img_h - btn_radius - margin]
+        font_size = int(btn_radius * 0.6)  # 字体大小随按钮缩放
 
         is_dragging = [False]
         start_drag_pos = [0, 0]
 
         user32 = ctypes.windll.user32
-        # 获取显示器工作区（排除任务栏）
         monitor = MONITORINFO()
         monitor.cbSize = ctypes.sizeof(MONITORINFO)
         user32.GetMonitorInfoW(user32.MonitorFromWindow(0, 1), ctypes.byref(monitor))
-
         work_w = monitor.rcWork.right - monitor.rcWork.left
         work_h = monitor.rcWork.bottom - monitor.rcWork.top
 
-        # 2. 修复：空间利用逻辑，使用工作区高度 work_h 而不是屏幕物理高度 sh
-        scale = min((work_w - 20) / img_w, (work_h - 10) / img_h)
+        scale = min((work_w - 40) / img_w, (work_h - 10) / img_h)
         tw, th = int(img_w * scale), int(img_h * scale)
 
         cv2.namedWindow(win_name, cv2.WINDOW_NORMAL | cv2.WINDOW_KEEPRATIO)
         cv2.resizeWindow(win_name, tw, th)
-        # 窗口顶格显示在工作区顶部
         cv2.moveWindow(win_name, monitor.rcWork.left + (work_w - tw) // 2, monitor.rcWork.top)
 
-        # 3. 强制置顶
         hwnd = user32.FindWindowW(None, win_name)
         if hwnd:
             user32.SetWindowPos(hwnd, -1, 0, 0, 0, 0, 0x0001 | 0x0002)
@@ -182,19 +192,29 @@ class ImageCropper(QWidget):
             overlay = temp_img.copy()
             cv2.circle(overlay, (int(btn_center[0]), int(btn_center[1])), btn_radius, (0, 100, 255), -1)
             cv2.addWeighted(overlay, 0.8, temp_img, 0.2, 0, temp_img)
-            temp_img = self.draw_chinese_text(temp_img, "保存", (int(btn_center[0]), int(btn_center[1])), 65)
+            # 字体大小动态传递
+            temp_img = self.draw_chinese_text(temp_img, "保存", (int(btn_center[0]), int(btn_center[1])), font_size)
 
             for i, (bx, by, bw, bh) in enumerate(boxes):
                 color = (0, 255, 0) if i in selected else (0, 0, 255)
-                cv2.rectangle(temp_img, (bx, by), (bx + bw, by + bh), color, 4 if i in selected else 2)
+                cv2.rectangle(temp_img, (bx, by), (bx + bw, by + bh), color, int(max(2, base_size * 0.005)))
 
             if cv2.getWindowProperty(win_name, cv2.WND_PROP_VISIBLE) < 1:
                 if status != "SAVE": status = "CANCEL"
                 break
 
             cv2.imshow(win_name, temp_img)
+
             if status == "SAVE": break
-            if cv2.waitKey(1) & 0xFF == 27: status = "CANCEL"; break
+
+            key = cv2.waitKey(1) & 0xFF
+            # --- 修复 1: 恢复空格保存功能 (空格键 ASCII 为 32) ---
+            if key == 32:
+                status = "SAVE"
+                break
+            if key == 27:
+                status = "CANCEL"
+                break
 
         cv2.destroyAllWindows()
         for _ in range(5): cv2.waitKey(1)
