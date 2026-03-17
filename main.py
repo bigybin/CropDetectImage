@@ -3,7 +3,6 @@ import os
 import cv2
 import numpy as np
 import ctypes
-from ctypes import wintypes
 from PyQt6.QtWidgets import (QApplication, QWidget, QVBoxLayout, QPushButton,
                              QLabel, QFileDialog, QHBoxLayout, QMessageBox)
 from PyQt6.QtCore import Qt
@@ -76,6 +75,19 @@ class ImageCropper(QWidget):
         fname, _ = QFileDialog.getOpenFileName(self, '选择图片', '', '图片文件 (*.jpg *.png *.jpeg)')
         if fname: self.process_image(fname)
 
+    def get_unique_path(self, base_dir, stem, index):
+        """核心：递归/循环检查文件名，确保不覆盖"""
+        counter = 0
+        while True:
+            # 第一次尝试：原名_编号.png
+            # 后续尝试：原名_编号(1).png, 原名_编号(2).png ...
+            suffix = f"({counter})" if counter > 0 else ""
+            test_name = f"{stem}_{index}{suffix}.png"
+            full_path = os.path.join(base_dir, test_name)
+            if not os.path.exists(full_path):
+                return full_path
+            counter += 1
+
     def draw_chinese_text(self, img, text, position, font_size, color=(255, 255, 255)):
         img_pil = Image.fromarray(cv2.cvtColor(img, cv2.COLOR_BGR2RGB))
         draw = ImageDraw.Draw(img_pil)
@@ -116,12 +128,17 @@ class ImageCropper(QWidget):
         if status == "SAVE" and selected_indices:
             base_dir = os.path.dirname(img_path)
             file_stem = os.path.splitext(os.path.basename(img_path))[0]
+
             for i, idx in enumerate(selected_indices):
                 bx, by, bw, bh = boxes[idx]
                 crop = img[by:by + bh, bx:bx + bw]
-                save_path = os.path.join(base_dir, f"{file_stem}_{i + 1}.png")
+
+                # --- 修改点：调用唯一路径获取函数，防止覆盖 ---
+                save_path = self.get_unique_path(base_dir, file_stem, i + 1)
+
                 res, img_encode = cv2.imencode('.png', crop)
                 if res: img_encode.tofile(save_path)
+
             QMessageBox.information(self, "完成", f"已成功提取 {len(selected_indices)} 张图片")
 
     def opencv_select_window(self, img, boxes):
@@ -130,13 +147,11 @@ class ImageCropper(QWidget):
         win_name = "BigYb_Select_Window"
 
         img_h, img_w = img.shape[:2]
-
-        # --- 修复 2: 按钮半径和边距改为百分比大小 ---
         base_size = min(img_h, img_w)
-        btn_radius = int(base_size * 0.08)  # 半径为短边的 8%
-        margin = int(base_size * 0.05)  # 边距为短边的 5%
+        btn_radius = int(base_size * 0.08)
+        margin = int(base_size * 0.05)
         btn_center = [img_w - btn_radius - margin, img_h - btn_radius - margin]
-        font_size = int(btn_radius * 0.6)  # 字体大小随按钮缩放
+        font_size = int(btn_radius * 0.6)
 
         is_dragging = [False]
         start_drag_pos = [0, 0]
@@ -145,8 +160,7 @@ class ImageCropper(QWidget):
         monitor = MONITORINFO()
         monitor.cbSize = ctypes.sizeof(MONITORINFO)
         user32.GetMonitorInfoW(user32.MonitorFromWindow(0, 1), ctypes.byref(monitor))
-        work_w = monitor.rcWork.right - monitor.rcWork.left
-        work_h = monitor.rcWork.bottom - monitor.rcWork.top
+        work_w, work_h = monitor.rcWork.right - monitor.rcWork.left, monitor.rcWork.bottom - monitor.rcWork.top
 
         scale = min((work_w - 40) / img_w, (work_h - 10) / img_h)
         tw, th = int(img_w * scale), int(img_h * scale)
@@ -163,7 +177,6 @@ class ImageCropper(QWidget):
         def mouse_callback(event, x, y, flags, param):
             nonlocal status
             dist = np.sqrt((x - btn_center[0]) ** 2 + (y - btn_center[1]) ** 2)
-
             if event == cv2.EVENT_LBUTTONDOWN:
                 if dist < btn_radius:
                     is_dragging[0] = True
@@ -192,7 +205,6 @@ class ImageCropper(QWidget):
             overlay = temp_img.copy()
             cv2.circle(overlay, (int(btn_center[0]), int(btn_center[1])), btn_radius, (0, 100, 255), -1)
             cv2.addWeighted(overlay, 0.8, temp_img, 0.2, 0, temp_img)
-            # 字体大小动态传递
             temp_img = self.draw_chinese_text(temp_img, "保存", (int(btn_center[0]), int(btn_center[1])), font_size)
 
             for i, (bx, by, bw, bh) in enumerate(boxes):
@@ -204,15 +216,12 @@ class ImageCropper(QWidget):
                 break
 
             cv2.imshow(win_name, temp_img)
-
             if status == "SAVE": break
-
             key = cv2.waitKey(1) & 0xFF
-            # --- 修复 1: 恢复空格保存功能 (空格键 ASCII 为 32) ---
-            if key == 32:
+            if key == 32:  # 空格保存
                 status = "SAVE"
                 break
-            if key == 27:
+            if key == 27:  # ESC取消
                 status = "CANCEL"
                 break
 
