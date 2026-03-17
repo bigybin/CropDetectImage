@@ -1,7 +1,9 @@
 提取图片内的图片
 
-安装所需依赖
+如需自己编译，安装所需依赖即可
 pip install -r requirements.txt
+
+下载：https://github.com/bigybin/CropDetectImage/releases
 
 拖拽添加图片
 <img width="501" height="380" alt="image" src="https://github.com/user-attachments/assets/0410ce60-b6ad-4ae0-9447-4cb17164b799" />
